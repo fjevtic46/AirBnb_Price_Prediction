@@ -1,0 +1,347 @@
+---
+title: "AirBnB Price Predictive Model based on Location and others "
+author: "Ahmad Zaini, Jenny Burgess, Filip Jevtic, Xingyu Yang"
+date: "11/27/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+library(cowplot)
+```
+
+## Data
+
+The following is the number of NAs in our data for each variables
+
+```{r}
+airbnb <- read.csv("AB_NYC_2019.csv")
+colSums(is.na(airbnb))
+```
+
+Because there are 10052 missing data for `reviews_per_month`, we decide to drop the variable.
+
+```{r}
+bnb <- airbnb %>%
+  select(-reviews_per_month)
+colSums(is.na(bnb))
+attach(bnb)
+```
+
+We want to drop `host_id`,`host_name` and `last_review` because the are not useful
+
+```{r}
+bnb <- bnb %>%
+  filter(price!=0) %>%
+  select(-c(host_name,name,last_review,id, host_id))
+glimpse(bnb)
+```
+
+##  Hypothesis Testing
+
+Since we are observing the factors of pricing in the different boroughs of New York, we hypothesize that the mean price between all five boroughs is the same as the mean price overall.
+
+$H_0:\mu=152$
+
+$H_a:\mu>152$
+
+```{r}
+# hypothesis testing
+mu <- mean(bnb$price)
+
+bnb.hypothesis <- bnb %>% 
+  group_by(neighbourhood_group) %>% 
+  summarise(mean_price = mean(price), sd = sd(price), n = length(price), t = qt(p = .975, df = n-1))
+
+bnb.hypothesis %>% 
+  group_by(neighbourhood_group) %>% 
+  summarise(t.stat = (mean_price - mu) / (sd / sqrt(n)), p.value = 2 * pt(t.stat, df = n-1, lower.tail = FALSE))
+```
+
+## Plotting Relationship of Price
+
+Now we want to generate some plots to look at relationship between different variables and the price of each listing.
+
+```{r, cache=TRUE}
+
+ggplot(bnb,aes(x=neighbourhood_group,y=price)) + geom_jitter(alpha =0.5,aes(color = room_type),position = position_jitter(width = 0.2))+ggtitle('Listing Prices in 5 Different Boroughs') + labs(x = "Neighborhood",y = "Price ($)",colour = "Room Type") #fill color by room_type
+ggplot(bnb,aes(x=room_type,y=price)) + geom_jitter(alpha =0.5,aes(color = neighbourhood_group),position = position_jitter(width = 0.2))+ggtitle('Listing Prices for 3 different Room Types') + labs(x = "Room Type",y = "Price ($)",colour = "Neighborhood Group") # fill color by neighbourhood
+#all below fill color by neighbourhood
+ggplot(bnb,aes(x=number_of_reviews,y=price,color = factor(neighbourhood_group))) + geom_point()+ ggtitle("Listing Prices based on the Number of Reviews") + labs(x = "Number of Reviews",y = "Price ($)",colour = "Neighborhood Group")
+ggplot(bnb,aes(x=availability_365,y=price,color = factor(neighbourhood_group))) + geom_point()+ ggtitle("Listing Prices Based on Number of Days Available Per Year ") + labs(x = "Availablity",y = "Price ($)",colour = "Neighborhood Group")
+ggplot(bnb,aes(x=minimum_nights,y=price,color = factor(neighbourhood_group))) + geom_point()+ ggtitle("Listing Prices Based on the Minimum Nights That Must Be Spent") + labs(x = "Minimum Nights",y = "Price ($)",colour = "Neighborhood Group")
+ggplot(bnb,aes(x=calculated_host_listings_count,y=price,color = factor(neighbourhood_group))) + geom_point()+ggtitle("Listing Prices based on the Count of the Host's Listings" ) + labs(x = "Calculated Host Listings Count",y = "Price ($)",colour = "Neighborhood Group")
+
+```
+
+From the plot, we can see that there seems to be no relationship between `availability_365` and `price`.
+
+## Breakdown
+
+We can also look at the breakdown of `room_type` within each `neighborhood_group` (borough) and find the total number of listings for each borough
+
+```{r}
+#break down
+table(neighbourhood_group,room_type)
+
+#total listing in each borough
+rowSums(table(neighbourhood_group,room_type))
+```
+
+We see that Manhattan and Brooklyn have higher number of listings compared to other three (Queens,Bronx,Staten Island).
+
+## Modelling
+
+### Linear
+
+First we need to break the data into a testing and training set to create a linear model.
+
+```{r}
+set.seed(10)
+test <- sample(nrow(bnb), 5000) 
+bnb.train <- bnb[-test, ] 
+bnb.test <- bnb[test, ]
+```
+
+Now, we can try to generate linear model for predicting price only based on neighbourhood group
+
+```{r}
+glm.1 <- lm(price~neighbourhood_group,data=bnb.train)
+summary(glm.1)
+par(mfrow=c(2,2))
+plot(glm.1)
+```
+
+This model uses Bronx and the base(intercept) and have coefficients for the other four boroughs. Here's the model :
+
+$$Price=87.933 + 37.588(I_{Brooklyn}) + 109.861(I_{Manhattan}) + 11.753(I_{Queens}) + 27.817(I_{Staten Island})$$
+
+Note that at 5% significance, the coefficient of Queens and Staten Island are not significant. However, for the sake of the  prediction, we're just going to use the coefficients.
+
+We're going to use this model to predict our test data.
+
+```{r}
+pred <- predict(glm.1,newdata=bnb.test,type="response")
+mse.glm.1 <- mean((pred-bnb.test$price)^2)
+mse.glm.1
+```
+
+### GLM with neighbourhood_group and room_type
+
+Next, we can add `room_type` to our model to improve the model
+
+```{r}
+glm.2 <- lm(price~neighbourhood_group+room_type,data=bnb.train)
+summary(glm.2)
+par(mfrow=c(2,2))
+plot(glm.2)
+```
+
+This model use listing at Bronx of entire home/apt as the base (intercept). Here's the model: 
+
+$$Price=161.959 + 22.697(I_{Brooklyn}) + 80.044(I_{Manhattan}) + 8.638(I_{Queens}) + 15.832(I_{Staten Island}) - 112.156(I_{Private Room}) - 135.270(I_{SharedRoom})$$
+
+Again, note that coefficients for Queens and Staten Island are insignificant, so we can say that effect of `neighbourhood_group` at Bronx, Queens and Staten Island are fairly similar. However, for the sake of prediction we're just going to use the coefficients.
+
+Now, we're going to make prediction.
+
+```{r}
+pred <- predict(glm.2,newdata=bnb.test,type="response")
+mse.glm.2 <- mean((pred-bnb.test$price)^2)
+mse.glm.2
+```
+
+### Manhattan Neighbourhoods
+
+We have to filter the data because some neighborhood dont have enough for regression. 
+
+`neighbourhood_group` is the overgeneralization of places. For example, listings in the middle of Times Square are grouped together with listings that are further north. So, we can expect that the prediction would be better if we use neighbourhood instead and make prediction.
+
+Therefore, we have decided to only look at the neighbourhoods located in the Manhattan group to test if those neighbourhoods provide a better model for prediction.
+
+```{r}
+# For this question, we need to make sure we have at least one listing for each of neighbourhood in bnb.test
+# Only then we can run the model
+bnb.train.manhattan <- bnb.train %>% 
+  filter(neighbourhood_group == "Manhattan")
+
+bnb.test.manhattan <- bnb.test %>% 
+  filter(neighbourhood_group == "Manhattan")
+
+ glm.3 <- lm(price~neighbourhood+room_type+ number_of_reviews,data=bnb.train.manhattan)
+ glm.3 %>% 
+   summary()
+# 
+ pred <- predict(glm.3,newdata=bnb.test.manhattan,type="response")
+ mse.glm.3 <- mean((pred-bnb.test.manhattan$price)^2)
+ mse.glm.3
+```
+
+### GLM with location based on coordinates
+
+We're going to assume that price depends on the distance from Times Square, the 'center of the city', so we will create new variables, `long.dist` and `lat.dist` which are the difference in coordinates between the listings and Times Square.
+
+Times Square coordinates: (40.759,-73.9845)
+
+```{r}
+long.ts <- -73.9845
+lat.ts <- 40.759
+
+# distance between latitiude and longitude
+long.dist <- abs(bnb.train$longitude-long.ts)
+lat.dist <- abs(bnb.train$latitude-lat.ts)
+
+bnb.train <- cbind(bnb.train,long.dist,lat.dist) #combine variable
+
+# do the same for test data
+long.dist <- abs(bnb.test$longitude-long.ts)
+lat.dist <- abs(bnb.test$latitude-lat.ts)
+
+bnb.test <- cbind(bnb.test,long.dist,lat.dist)
+
+
+```
+
+Now, we fit linear model using the coordinates, with interaction effect and other predictors.
+
+```{r}
+#model with latitude and longitude difference from Times Square
+glm.4 <- lm(price~lat.dist+long.dist+lat.dist*long.dist + 
+              room_type + number_of_reviews,data=bnb.train)
+summary(glm.4)
+
+predict.4 <- predict(glm.4,newdata=bnb.test, type="response")
+mse.4 <- (predict.4-bnb.test$price)^2
+mse.glm.4 <- mean((predict.4-bnb.test$price)^2)
+mse.glm.4
+
+par(mfrow=c(2,2))
+plot(glm.4)
+
+bnb.test.predict <- cbind(bnb.test,predict.4)
+bnb.test.predict[sample(1:5000,20),c("neighbourhood","price","predict.4","room_type")]
+```
+
+Our models doesnt work well with high-value listings. This is because our model can just learn differences between location and room type. There is no predictor that associates with how luxury the listings are.  Now lets compare MSE of a model without high-value listings.
+
+```{r}
+#remove outliers
+out <- mean(bnb.train$price) + 2*sd(bnb.train$price)
+bnb.train2 <- bnb.train %>%
+  filter(price < out)
+hist(bnb.train2$price,xlab = "Price",ylab = "Frequency", main = "Train Listing Price Distribution" ) #add color to plot
+
+
+bnb.test2 <- bnb.test %>%
+  filter(price < out)
+hist(bnb.test2$price,xlab = "Price",ylab = "Frequency",main = "Test Listing Price Distribution") #add color to plot
+
+#model without outlier
+glm.5 <- lm(sqrt(price)~lat.dist+long.dist+lat.dist*long.dist + 
+              room_type + number_of_reviews,data=bnb.train2)
+summary(glm.5)
+
+predict.5 <- predict(glm.5,newdata=bnb.test2, type="response")^2
+mse.5 <- (predict.5-bnb.test2$price)^2
+mse.glm.5 <- mean((predict.5-bnb.test2$price)^2)
+mse.glm.5
+
+par(mfrow=c(2,2))
+plot(glm.5)
+```
+
+
+## KNN
+
+Next, we are going to fit the data in KNN model.
+
+First, we try to build a KNN model with k = 10.
+
+```{r}
+library(FNN)
+
+#KNN with K=10
+
+#convert data into matrix
+train.matrix <- model.matrix(price~long.dist+lat.dist+
+                               room_type+number_of_reviews,
+                             data=bnb.train)[,-1] #exclude first column (intercept)
+test.matrix <- model.matrix(price~long.dist+lat.dist+
+                               room_type+number_of_reviews,
+                             data=bnb.test)[,-1] #exclude first column (intercept)
+
+#normalize
+train.matrix <- apply(train.matrix[,-1],2,scale)
+test.matrix <- apply(test.matrix[,-1],2,scale)
+
+#response vector
+train.y <- bnb.train$price # response from train data
+test.y <- bnb.test$price
+
+#model fit
+knn.1 <- knn.reg(train.matrix,test.matrix,train.y, k=10)
+
+#mse
+pred.knn <- knn.1$pred
+knn.10.mse <- mean((pred.knn - test.y)^2)
+knn.10.mse
+```
+
+Next, we run the KNN with different tuning parameters to find the best model.
+
+```{r, cache=TRUE}
+knn.list <- list()
+mse.df <- list()
+for (k in c(200:300)){
+  cvknn <- knn.reg(train.matrix,
+                  test.matrix,
+                  train.y,k=k)
+  pred.knn <- cvknn$pred
+  knn.list[[k]] <- data.frame(pred.knn)
+  names(knn.list[[k]]) <- k
+  mse.df[k] <- mean((pred.knn - test.y)^2)
+}
+mse.df <- unlist(mse.df)
+mse.df <- data.frame(mse.df)
+rownames(mse.df) <- 200:300
+plot(rownames(mse.df),mse.df$mse.df,xlab="Tuning Parameter K",ylab="MSE",main="MSE for different tuning parameters") #change the x-axis range from 200 to 300
+points(which.min(mse.df$mse.df)+199,min(mse.df$mse.df), col = "red", cex = 2, pch = 20)
+
+which.min(mse.df$mse.df) #best k is 255
+knn.256.mse <- mse.df[which.min(mse.df$mse.df),]
+knn.256.mse
+```
+
+It turns out that K=256 gives the best prediction for the test data based on MSE.
+
+## MSE COMPARE
+
+Here is comparison between different models and data subsets.
+
+```{r}
+library(knitr)
+#comparison between different model
+
+mse_df <- data.frame(c(mse.glm.1,mse.glm.2,mse.glm.4,knn.10.mse,knn.256.mse),row.names = c("GLM neighbourhood group","GLM neighbourhood group + room type","GLM coordinates + others","MSE KNN 10","MSE KNN 256"))
+colnames(mse_df) <- c("MSE")
+kable(mse_df, caption="MSE Comparison between different models") # Title : comparison between models
+
+#comparison between different data subset
+mse_df_2 <- data.frame(c(mse.glm.5,knn.256.mse,mse.glm.3),row.names = c("Complete data","Completed data with no outliers","Manhattan Only"))
+colnames(mse_df_2) <- c("MSE")
+kable(mse_df_2, caption="MSE Comparison between different data subsets") # Title : comparison between models
+
+
+```
+
+## Conclusion
+
+Based on the hypothesis testing, we can conclude that the four neighbourhood groups of the Bronx, Brokklyn, Queens, and Staten Island do not have a pvalue significant enough to reject the null therefore we can conclue that these four have a mean price of \$152; however, Manhattan's p-value is extremely low, which indicates that we reject the null and conclude that the mean price in Manhattan is greater than \$152.
+
+Based on the residual plots, we conclude that the data is not really normal, especially for data with price higher than 2 standard deviation away from the mean.
+
+Based on test data MSE, GLM with coordinates gives the best prediction with test MSE of 60948, followed by KNN with 256 neighbours, with test MSE of 60957.
+
+Removing outliers improves the prediction by a lot with test MSE of only 5791. This aligns with the limitation of our data with only location, room type, and number of reviews as predictors. We did not have any predictor that indicates the *expensiveness* of the listings.
+
